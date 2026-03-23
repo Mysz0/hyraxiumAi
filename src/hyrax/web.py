@@ -14,8 +14,9 @@ from bs4 import BeautifulSoup
 log = structlog.get_logger()
 
 _PAGE_CHAR_LIMIT = 3000
+_RESEARCH_PAGE_CHAR_LIMIT = 8000
 _SEARCH_TIMEOUT = 10.0
-_FETCH_TIMEOUT = 10.0
+_FETCH_TIMEOUT = 15.0
 
 
 class WebSearchDisabledError(Exception):
@@ -69,8 +70,8 @@ class Web:
             log.warning("web.search failed", error=str(exc))
             return []
 
-    async def fetch_page(self, url: str) -> str:
-        """Fetch a URL, strip HTML, return up to 3000 chars of body text."""
+    async def fetch_page(self, url: str, char_limit: int = _PAGE_CHAR_LIMIT) -> str:
+        """Fetch a URL, strip HTML, return up to char_limit chars of body text."""
         try:
             response = await self._client.get(url, timeout=_FETCH_TIMEOUT)
             response.raise_for_status()
@@ -78,7 +79,7 @@ class Web:
             for tag in soup(["script", "style", "nav", "footer"]):
                 tag.decompose()
             text = soup.get_text(separator=" ", strip=True)
-            return text[:_PAGE_CHAR_LIMIT]
+            return text[:char_limit]
         except httpx.TimeoutException:
             log.warning("web.fetch_page timeout", url=url)
             return ""

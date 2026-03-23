@@ -9,6 +9,7 @@ and starts the APScheduler proactive message scheduler.
 import logging
 
 import structlog
+from telegram import BotCommand
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 
 from hyrax.config import Settings
@@ -36,11 +37,19 @@ def main() -> None:
     web = Web(config)
 
     app = Application.builder().token(config.telegram_token).build()
-    scheduler = Scheduler(config, bot=app.bot, brain=brain)
-
+    scheduler = Scheduler(config, bot=app.bot, brain=brain, memory=memory, web=web)
+    
     async def post_init(application: Application) -> None:
         await memory.init()
         await scheduler.start()
+        await application.bot.set_my_commands([
+            BotCommand("start",    "say hi"),
+            BotCommand("help",     "show commands"),
+            BotCommand("memory",   "see what i remember about you"),
+            BotCommand("research", "see what i've been reading"),
+            BotCommand("status",   "health check — model, uptime, memory sizes"),
+            BotCommand("reset",    "clear today's conversation context"),
+        ])
         log.info("hyrax.ready")
 
     app.post_init = post_init
@@ -54,7 +63,7 @@ def main() -> None:
     app.add_handler(CommandHandler("start", commands["start"]))
     app.add_handler(CommandHandler("help", commands["help"]))
     app.add_handler(CommandHandler("memory", commands["memory"]))
-    app.add_handler(CommandHandler("forget", commands["forget"]))
+    app.add_handler(CommandHandler("research", commands["research"]))
     app.add_handler(CommandHandler("reset", commands["reset"]))
     app.add_handler(CommandHandler("status", commands["status"]))
 

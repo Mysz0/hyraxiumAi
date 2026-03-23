@@ -21,6 +21,22 @@ log = structlog.get_logger()
 
 _TELEGRAM_MSG_LIMIT = 4000  # stay well under Telegram's 4096-char hard limit
 _SEARCH_RE = re.compile(r'\[SEARCH:\s*(.+?)\]')
+# Strict: with closing tag. Loose: code fence acts as implicit close.
+_WRITE_FILE_RE = re.compile(
+    r'\[WRITE_FILE:\s*(.+?)\]\s*\n'
+    r'(?:```\w*\n)?'       # optional opening code fence
+    r'(.*?)'
+    r'(?:\n```\s*)?'        # optional closing code fence
+    r'\n?\[/WRITE_FILE\]',
+    re.DOTALL,
+)
+_WRITE_FILE_LOOSE_RE = re.compile(
+    r'\[WRITE_FILE:\s*(.+?)\]\s*\n'
+    r'```\w*\n'             # opening fence (required for unclosed match)
+    r'(.*?)'
+    r'\n```',               # closing fence acts as implicit end
+    re.DOTALL,
+)
 _THINKING_TEXTS = ["thinking.", "thinking..", "thinking..."]
 
 
@@ -123,7 +139,8 @@ def make_handler(config, brain, memory, web):
         # Build system prompt with current memory
         today_mem = await memory.read_today()
         core_mem = await memory.read_core()
-        memory_block = "\n\n".join(filter(None, [core_mem, today_mem]))
+        research = await memory.read_recent_research()
+        memory_block = "\n\n".join(filter(None, [core_mem, today_mem, research]))
         system_prompt = config.build_system_prompt(memory_block=memory_block)
 
         # Send placeholder and start thinking animation
@@ -168,13 +185,64 @@ def make_handler(config, brain, memory, web):
                 chat_id,
             )
         else:
-            # No search — display the already-collected first response
+            # No search — process file tags and display the response
+            display_text, files = await _process_files(first_response)
+
             async def _replay():
-                yield first_response
+                yield display_text
 
             await _stream_to_telegram(msg, _replay(), context, chat_id)
 
+            if files:
+                file_list = "\n".join(f"  {f}" for f in files)
+                await context.bot.send_message(chat_id, f"wrote files:\n{file_list}")
+
         # Background: summarize and save notable facts to memory
         safe_task(memory.summarize_and_save(brain._history.get(chat_id, []), brain.client))
+        # Background: check if the user asked Hyrax to do something later
+        safe_task(_extract_suggestion(user_text, first_response))
+
+    async def _process_files(response_text: str) -> tuple[str, list[str]]:
+        """Parse [WRITE_FILE] tags, write files, return cleaned text and list of written paths."""
+        # Try strict pattern first, fall back to loose (unclosed tag with code fences)
+        matches = _WRITE_FILE_RE.findall(response_text)
+        clean_re = _WRITE_FILE_RE
+        if not matches:
+            matches = _WRITE_FILE_LOOSE_RE.findall(response_text)
+            clean_re = _WRITE_FILE_LOOSE_RE
+
+        written = []
+        for filepath, content in matches:
+            filepath = filepath.strip()
+            # Strip any markdown fences the LLM snuck in
+            content = re.sub(r'^```\w*\n?', '', content.strip())
+            content = re.sub(r'\n?```\s*$', '', content)
+            ok = await memory.write_project_file(filepath, content.strip())
+            if ok:
+                written.append(filepath)
+
+        cleaned = clean_re.sub(lambda m: f"[created: {m.group(1).strip()}]", response_text)
+        return cleaned, written
+
+    async def _extract_suggestion(user_text: str, bot_response: str) -> None:
+        """Check if the user asked Hyrax to do something and save it as a suggestion."""
+        try:
+            # Reset history each time — this is a stateless extraction, not a conversation
+            brain.reset_history(-5)
+            result = await brain.collect_stream(
+                chat_id=-5,
+                user_text=(
+                    f"USER: {user_text}\nBOT: {bot_response[:500]}\n\n"
+                    "Did the user ask or suggest the bot do something later "
+                    "(research a topic, start a project, look into something, check something out)? "
+                    "If yes, reply with ONLY the task in a few words. If no, reply with NONE."
+                ),
+                system_prompt="You extract tasks from conversations. Reply with just the task or NONE. No other text.",
+            )
+            cleaned = result.strip().lstrip("-•* ").rstrip(".")
+            if cleaned and cleaned.upper() != "NONE" and len(cleaned) < 200 and "NONE" not in cleaned.upper():
+                await memory.append_suggestion(cleaned)
+        except Exception as exc:
+            log.warning("bot.suggestion_extract_failed", error=str(exc))
 
     return handle_message

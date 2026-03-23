@@ -26,12 +26,17 @@ def make_commands(config, brain, memory) -> dict:
 
     @owner_only(config)
     async def start(update: Update, context: CallbackContext) -> None:
-        await update.message.reply_text(
-            f"oh hey!! i'm {config.bot_name}, your personal AI hamster 🐹\n\n"
-            f"i'm wired into a local LLM and i remember stuff between conversations. "
-            f"talk to me whenever, i'm literally always here (no life lol)\n\n"
-            f"type /help to see what i can do"
+        chat_id = update.effective_chat.id
+        core_mem = await memory.read_core()
+        today_mem = await memory.read_today()
+        memory_block = "\n\n".join(filter(None, [core_mem, today_mem]))
+        system_prompt = config.build_system_prompt(memory_block=memory_block)
+        response = await brain.collect_stream(
+            chat_id=chat_id,
+            user_text="hey",
+            system_prompt=system_prompt,
         )
+        await update.message.reply_text(response)
 
     @owner_only(config)
     async def help_cmd(update: Update, context: CallbackContext) -> None:
@@ -40,7 +45,7 @@ def make_commands(config, brain, memory) -> dict:
             "/start — say hi\n"
             "/help — this thing you're reading\n"
             "/memory — see what i remember about you\n"
-            "/forget — wipe my permanent memory (drama ensues)\n"
+            "/research — see what i've been reading\n"
             "/reset — clear today's conversation context\n"
             "/status — see my current setup and health"
         )
@@ -52,19 +57,19 @@ def make_commands(config, brain, memory) -> dict:
 
         parts = []
         if core.strip():
-            parts.append(f"**permanent memory:**\n```\n{core.strip()}\n```")
+            core_text = core.strip()[:1500]
+            parts.append(f"**permanent memory:**\n```\n{core_text}\n```")
         if today.strip():
-            parts.append(f"**today's notes:**\n```\n{today.strip()}\n```")
+            today_text = today.strip()[:2000]
+            parts.append(f"**today's notes:**\n```\n{today_text}\n```")
 
         if parts:
-            await update.message.reply_text(
-                "\n\n".join(parts),
-                parse_mode="Markdown",
-            )
+            text = "\n\n".join(parts)
+            if len(text) > 3900:
+                text = text[:3900] + "\n..."
+            await update.message.reply_text(text, parse_mode="Markdown")
         else:
-            await update.message.reply_text(
-                "my memory is blank... we literally just met i think?? 🤔"
-            )
+            await update.message.reply_text("my memory is blank right now")
 
     @owner_only(config)
     async def forget(update: Update, context: CallbackContext) -> None:
@@ -81,6 +86,23 @@ def make_commands(config, brain, memory) -> dict:
         await update.message.reply_text(
             "wait what were we talking about? ...never mind, fresh start i guess 🤷"
         )
+
+    @owner_only(config)
+    async def research_cmd(update: Update, context: CallbackContext) -> None:
+        notes = await memory.read_recent_research(days=2)
+        if notes.strip():
+            text = notes.strip()
+            # Telegram message limit
+            if len(text) > 3800:
+                text = text[:3800] + "\n…"
+            await update.message.reply_text(
+                f"**what i've been reading:**\n```\n{text}\n```",
+                parse_mode="Markdown",
+            )
+        else:
+            await update.message.reply_text(
+                "haven't read anything yet. give me a bit."
+            )
 
     @owner_only(config)
     async def status(update: Update, context: CallbackContext) -> None:
@@ -118,7 +140,7 @@ def make_commands(config, brain, memory) -> dict:
         "start": start,
         "help": help_cmd,
         "memory": memory_cmd,
-        "forget": forget,
+        "research": research_cmd,
         "reset": reset,
         "status": status,
     }
