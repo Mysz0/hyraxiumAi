@@ -1,0 +1,17 @@
+[Unit]
+Description=Hyrax Telegram Bot
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/hyrax
+ExecStart=/usr/bin/docker compose -f /opt/hyrax/docker-compose.yml up
+ExecStop=/usr/bin/docker compose -f /opt/hyrax/docker-compose.yml down
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

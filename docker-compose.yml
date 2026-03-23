@@ -1,0 +1,18 @@
+services:
+  hyrax:
+    build: .
+    image: hyrax:latest
+    container_name: hyrax
+    # host networking so 172.17.0.1 reaches Ollama/SearXNG on the host.
+    # Linux server only. For macOS dev, remove this line and use host.docker.internal.
+    network_mode: host
+    volumes:
+      - ./memory:/memory
+    env_file:
+      - .env
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
